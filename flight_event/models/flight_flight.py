@@ -1,5 +1,5 @@
-from odoo import api, models, fields
-from odoo.exceptions import UserError
+from odoo import api, models, fields, _
+from odoo.exceptions import UserError, ValidationError
 
 
 class FlightFlight(models.Model):
@@ -12,48 +12,54 @@ class FlightFlight(models.Model):
                                           compute='_compute_phase_durations', store=True,
                                           string='Phase Durations')
 
-    block_duration = fields.Float(string='Block Time',
-                                   compute='_compute_block_flight_durations',
-                                   help="Duration of the Block phase in hours", store=True,)
-    flight_duration = fields.Float(string='Flight Time',
-                                    compute='_compute_block_flight_durations',
-                                    help="Duration of the Flight phase in hours",store=True,)
+    @api.constrains('event_time_ids')
+    def _check_event_sequence(self):
+        for flight in self:
+            latest_times = {}
+            for event in flight.event_time_ids.sorted(
+                    key=lambda r: r.code_id.sequence):
+                if event.time_kind in latest_times and event.time < latest_times[
+                    event.time_kind]:
+                    raise ValidationError (_ (
+                        "Invalid event sequence: %(event)s (%(time_kind)s) is out of order.",
+                        event=event.code_id.name,
+                        time_kind=event.time_kind
+                    ))
+                latest_times[event.time_kind] = event.time
 
-    @api.depends('event_time_ids', 'event_time_ids.time', 'event_time_ids.time_kind', 'event_time_ids.code_id')
+    @api.depends('event_time_ids', 'event_time_ids.time', 'event_time_ids.code_id')
     def _compute_phase_durations(self):
         PhaseDuration = self.env['flight.phase.duration']
+        Phase = self.env['flight.phase']
 
         for flight in self:
-            phases = self.env['flight.phase'].search([])
-            phase_durations = PhaseDuration
+            phases = Phase.search([])
+            durations = PhaseDuration.search([('flight_id', '=', flight.id)])
+            durations.unlink ()  # Remove existing durations
 
+            new_durations = []
             for phase in phases:
-                start_event = flight.event_time_ids.filtered(
+                start_event = flight.event_time_ids.filtered (
                     lambda
                         e: e.code_id == phase.start_event_code_id and e.time_kind == 'A'
                 )
-                end_event = flight.event_time_ids.filtered(
+                end_event = flight.event_time_ids.filtered (
                     lambda
                         e: e.code_id == phase.end_event_code_id and e.time_kind == 'A'
                 )
 
                 if start_event and end_event and start_event.time and end_event.time:
-                    phase_durations |= PhaseDuration.create({
+                    duration = (
+                                           end_event.time - start_event.time).total_seconds () / 3600.0
+                    new_durations.append ({
                         'flight_id': flight.id,
                         'phase_id': phase.id,
                         'start_time': start_event.time,
                         'end_time': end_event.time,
+                        'duration': round (duration, 2),
                     })
-            flight.phase_duration_ids = phase_durations
 
-    @api.depends('phase_duration_ids.duration', 'phase_duration_ids.phase_id.name')
-    def _compute_block_flight_durations(self):
-        for flight in self:
-            block_phase = flight.phase_duration_ids.filtered(lambda p: p.phase_id.name == 'Block')
-            flight_phase = flight.phase_duration_ids.filtered(lambda p: p.phase_id.name == 'Flight')
-
-            flight.block_duration = block_phase[0].duration if block_phase else 0.0
-            flight.flight_duration = flight_phase[0].duration if flight_phase else 0.0
+            flight.phase_duration_ids = [(0, 0, vals) for vals in new_durations]
 
     def _track_event_time_changes(self, event_time_vals):
         for record in self:
@@ -82,7 +88,6 @@ class FlightFlight(models.Model):
                 record.message_post(body=message)
 
     def write(self, vals):
-        print('vals ', vals)
         if 'event_time_ids' in vals:
             self._track_event_time_changes(vals['event_time_ids'])
         return super(FlightFlight, self).write(vals)

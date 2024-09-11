@@ -3,12 +3,12 @@
 from odoo import fields, models, api
 
 
-class FlightPhaseDuration(models.TransientModel):
+class FlightPhaseDuration(models.Model):
     _name = 'flight.phase.duration'
     _description = 'Flight Phase Duration'
-    # _auto = True
 
-    flight_id = fields.Many2one('flight.flight', string='Flight', readonly=True)
+    name = fields.Char(compute='_compute_name', store=True)
+    flight_id = fields.Many2one('flight.flight', string='Flight', readonly=True, ondelete='cascade')
     phase_id = fields.Many2one('flight.phase', string='Phase', readonly=True)
     start_time = fields.Datetime(string='Start Time', readonly=True)
     end_time = fields.Datetime(string='End Time', readonly=True)
@@ -24,39 +24,11 @@ class FlightPhaseDuration(models.TransientModel):
             else:
                 record.duration = 0.0
 
-    # def init(self):
-    #     self.env.cr.execute("""
-    #     CREATE OR REPLACE VIEW flight_phase_duration AS (
-    #         WITH phase_events AS (
-    #             SELECT
-    #                 f.id AS flight_id,
-    #                 p.id AS phase_id,
-    #                 p.name AS phase_name,
-    #                 start_event.time AS start_time,
-    #                 end_event.time AS end_time
-    #             FROM
-    #                 flight_flight f
-    #             CROSS JOIN flight_phase p
-    #             LEFT JOIN flight_event_time start_event ON start_event.flight_id = f.id
-    #                 AND start_event.code_id = p.start_event_code_id
-    #                 AND start_event.time_kind = 'A'
-    #             LEFT JOIN flight_event_time end_event ON end_event.flight_id = f.id
-    #                 AND end_event.code_id = p.end_event_code_id
-    #                 AND end_event.time_kind = 'A'
-    #         )
-    #         SELECT
-    #             ROW_NUMBER() OVER () AS id,
-    #             flight_id,
-    #             phase_id,
-    #             start_time,
-    #             end_time,
-    #             EXTRACT(EPOCH FROM (end_time - start_time)) / 3600.0 AS duration
-    #         FROM phase_events
-    #         WHERE start_time IS NOT NULL AND end_time IS NOT NULL
-    #     )
-    #     """)
+    @api.depends('flight_id', 'phase_id', 'duration')
+    def _compute_name(self):
+        for record in self:
+            record.name = f"{record.flight_id.id} - {record.phase_id.name}: {record.duration:.2f} hours"
 
-    # @api.model
-    # def refresh_view(self):
-    #     self.init()
-
+    _sql_constraints = [
+        ('unique_flight_phase', 'UNIQUE(flight_id, phase_id)', 'Each phase can only have one duration record per flight.')
+    ]
